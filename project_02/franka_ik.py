@@ -73,7 +73,7 @@ def rotation_matrix_to_axis_angle(R):
         raise ValueError("Matrix is not a valid rotation matrix")
     
     # TODO: Compute the rotation angle
-    angle = 0
+    angle = math.acos((np.trace(R) - 1) /2)
     
     # Handle special cases
     if abs(angle) < 1e-6:
@@ -211,6 +211,19 @@ def jacobian_fd(angles):
     J = np.zeros((6, n_joints))
 
     # TODO: compute jacobian using finite difference. You only need to complete one jacobian function, either jacobian_fd or jacobian. 
+    base_T = forward_kinematics_franka(angles)
+
+    for i in range(n_joints):
+        #Have to create Perturbed Angles
+        perturbed_angles = angles.copy()
+        perturbed_angles[i] += epsilon
+        #calculage perturbed transformations
+
+        perturbed_T = forward_kinematics_franka(perturbed_angles)
+        #calculate the difference and divide by epislon
+        diff = error(base_T, perturbed_T)
+        J[:, i] = diff / epsilon
+    
 
     return J
 
@@ -227,8 +240,59 @@ def jacobian(angles):
     J = np.zeros((6, n_joints))
 
     # TODO: compute jacobian using the formula for rotational joints. You only need to complete one jacobian function, either jacobian_fd or jacobian. 
-
+  
+    # Get the current transformation matrix for end-effector
+    ee_T = forward_kinematics_franka(angles)
+    ee_pos = ee_T[:3, 3]  # End-effector position
+    
+    # Initialize joint positions and z-axes
+    joint_positions = [np.array([0, 0, 0])]  # Base frame position
+    z_axes = [np.array([0, 0, 1])]  # z-axis of base frame
+    
+    # Calculate intermediate transformations to get joint positions and rotation axes
+    T = np.eye(4)
+    
+    # DH parameters for Franka Emika Panda (simplified)
+    theta1, theta2, theta3, theta4, theta5, theta6, theta7 = angles
+    
+    # Define the transformation matrices for each joint
+    T01 = transformation_matrix(rotation_matrix_z(theta1), np.array([0, 0, 0.333]))
+    joint_positions.append(T01[:3, 3])
+    z_axes.append(T01[:3, :3] @ np.array([0, 0, 1]))
+    
+    T02 = T01 @ transformation_matrix(rotation_matrix_x(-math.pi/2) @ rotation_matrix_z(theta2), np.array([0, 0, 0]))
+    joint_positions.append(T02[:3, 3])
+    z_axes.append(T02[:3, :3] @ np.array([0, 0, 1]))
+    
+    T03 = T02 @ transformation_matrix(rotation_matrix_x(math.pi/2) @ rotation_matrix_z(theta3), np.array([0, -0.316, 0]))
+    joint_positions.append(T03[:3, 3])
+    z_axes.append(T03[:3, :3] @ np.array([0, 0, 1]))
+    
+    T04 = T03 @ transformation_matrix(rotation_matrix_x(math.pi/2) @ rotation_matrix_z(theta4), np.array([0.0825, 0, 0]))
+    joint_positions.append(T04[:3, 3])
+    z_axes.append(T04[:3, :3] @ np.array([0, 0, 1]))
+    
+    T05 = T04 @ transformation_matrix(rotation_matrix_x(-math.pi/2) @ rotation_matrix_z(theta5), np.array([-0.0825, 0.384, 0]))
+    joint_positions.append(T05[:3, 3])
+    z_axes.append(T05[:3, :3] @ np.array([0, 0, 1]))
+    
+    T06 = T05 @ transformation_matrix(rotation_matrix_x(math.pi/2) @ rotation_matrix_z(theta6), np.array([0, 0, 0]))
+    joint_positions.append(T06[:3, 3])
+    z_axes.append(T06[:3, :3] @ np.array([0, 0, 1]))
+    
+    T07 = T06 @ transformation_matrix(rotation_matrix_x(math.pi/2) @ rotation_matrix_z(theta7), np.array([0.088, 0, 0]))
+    joint_positions.append(T07[:3, 3])
+    z_axes.append(T07[:3, :3] @ np.array([0, 0, 1]))
+    
+    # Compute Jacobian for each joint
+    for i in range(n_joints):
+        # Linear velocity component: z_i × (o - o_i)
+        J[:3, i] = np.cross(z_axes[i], ee_pos - joint_positions[i])
+        # Angular velocity component: z_i
+        J[3:, i] = z_axes[i]
+    
     return J
+    
 
 def shift_angle(angles):
     # shift angles to between 0 and 2*pi
@@ -252,7 +316,7 @@ def inverse_kinematics_franka(ref_T):
     for iter in range(max_iter):
         current_T = forward_kinematics_franka(angles)
         # TODO: compute the error between the current transformation matrix and the ref_T.
-        cur_error = np.zeros((6, 1))
+        cur_error = error(current_T, ref_T)
 
         if np.linalg.norm(cur_error) < tol:
             print(f"Converged after {iter} iterations")
@@ -261,6 +325,12 @@ def inverse_kinematics_franka(ref_T):
         J = jacobian_fd(angles)  # compute jacobian with jacobian_fd or jacobian depending on which one you choose to complete
         
         # TODO: Update joint angles
+        J_pinv = np.linalg.pnv(J)
+        delta_angles = J_pinv @ cur_error
+
+        #Apply damping
+        alpha = 0.5
+        angles = angles + alpha * delta_angles
         
     
     print("Warning: Did not converge to desired tolerance.")
@@ -269,6 +339,7 @@ def inverse_kinematics_franka(ref_T):
 
 
 class IKNode(Node):
+
 
     def __init__(self):
         super().__init__('ik_calculation_node')
